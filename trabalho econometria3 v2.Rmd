@@ -1,0 +1,313 @@
+---
+title: "Projeto econometria 3"
+author: "Francielly Gomez Gastardi 7985986, Julia Carneiro Gonçalves Baptista 9269816, Luccas Gomes Menato -10698213, Pedro Ortencio Pires de Campos Telles 11238851 e Victor Akira Nakamura Yatsugafu 11240704"
+date: "2022-12-07"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+Aqui instalamos e baixamos todos os pacotes que contém informações necessárias para concluir o que se pede no projeto.
+```{r}
+library(latex2exp)
+library(knitr)
+library(tinytex)
+library(tseries)
+library(installr)
+library(forecast)
+library(readxl)
+library(readr)
+library(tidyverse)
+library(vars)
+library(BETS)
+library(TSA)
+library(lmtest)
+library(aTSA)
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+```
+Primeiro, precisaremos fazer ajustes de acordo com a restrição de tempo pedida no exercício e colocar os dados em formato de time series
+
+```{r}
+df_projeto <- read_excel("df projeto.xlsx", 
+                         sheet = "Planilha1", range = "A2:N126")
+projeto1<-head(df_projeto,-30)
+projeto2<-ts(projeto1$Ocupada,start = c(2012,3),frequency=12)
+```
+
+Também é interessante olhar o gráfico e observar com o que ele se parece. Abaixo, vemos como a série parece estocástica com sazonalidade.
+
+```{r}
+ts.plot(projeto2,ylab="População ocupada",xlab='ano')
+```
+
+A função abaixo decompõe a série de acordo com as componentes estocástica,sazonale tendência.
+
+```{r}
+
+plot(decompose(projeto2))
+```
+
+Antes de testar o modelo, é importante avaliar estacionariedade,primeiramente da parte não sazonal.
+
+1.Podemos checar o gráfico da FAC da parte não sazonal. O teste não nos dá uma resposta exata, mas funciona como uma "dica" do modelo.Como vemos abaixo, As autocorreções e autocorrelações parciais se assemelham a de um AR(1), mas sem que a ACF decaia de forma geométrica, o que indica um processo não estacionário.
+```{r}
+acf(projeto2,lag.max = 12)
+```
+```{r}
+pacf(projeto2,lag.max=12)
+```
+
+Fizemos então o teste de raíz unitária.Como vemos, há RU.
+```{r}
+adf.test(projeto2)
+```
+
+Mas, ainda precisamos descobrir quantas diferenciações são necessárias para tornar a série estacionária e qual o tipo de estacionariedade (estocástica ou determinística).
+
+Primeiro teste: modelo com tendência determinística e com constante. Não rejeitamos Ho para tau3=0, phi2=0 e phi3=0
+```{r}
+adf.trend <- ur.df(projeto2, type = c('trend'), lags = 12, selectlags = "AIC")
+adf.trend@teststat
+adf.trend@cval
+```
+
+Para proceder com a modelagem, fizemos a primeira diferenciação. Percebe-se que a variância não parece constante ainda. Por isso, utilizaremos log nos próximos testes.
+```{r}
+ts.plot(diff(projeto2))
+```
+
+Agora, podemos avaliar a estacionariedade da parte sazonal.Pelo formato da ACF abaixo, há indício de que a parte sazonal também não é estacionária.
+```{r}
+acf(diff(log(projeto2)), lag.max = 48)
+```
+
+Diferenciando a parte sazonal:
+```{r}
+diff(diff(log(projeto2)), lag = 12)
+```
+
+Avaliamos abaixo se agora a parte sazonal está estacionária. Apesar de não haver mais o decaimento lento, a ACF se assemelha a de um MA(2). Voltaremos a questão mais abaixo.
+```{r}
+acf(diff(diff(log(projeto2)), lag = 12),lag=48)
+```
+```{r}
+pacf(diff(diff(log(projeto2)), lag = 12),lag=48)
+```
+
+Agora refazemos o teste de RU para realmente atestar a estacionariedade. Como vemos, rejeitamos Ho, e portanto a série está estacionária.
+```{r}
+adf.drift2 <- ur.df(diff(diff(diff(log(projeto2)), lag = 12)), type = c('trend'), lags = 12, selectlags = "AIC")
+adf.drift2@teststat
+adf.drift2@cval 
+
+```
+
+O forecast nos ajuda a identificar o modelo, como vemos abaixo. Mas, como a FAC demonstrou decaimento semelhante a um MA, na modelagem testaremos mais de um modelo.
+```{r}
+forecast::auto.arima(projeto2)
+```
+
+Estimação:
+Primeiro modelo - aquele mostrado pelo forecast.
+```{r}
+fit1.sarima <- Arima((projeto2), order = c(1,1,0), seasonal = c(2,1,0))
+BETS::t_test(fit1.sarima, alpha = 0.05)
+```
+Segundo modelo- com a componente MA.Como vemos, os lags da parte sazonal foram rejeitados. Dessa forma, partiremos para um terceiro modelo.
+```{r}
+fit2.sarima <- Arima((projeto2), order = c(1,1,0), seasonal = c(2,1,1))
+BETS::t_test(fit2.sarima, alpha = 0.05)
+```
+
+Terceiro modelo:
+```{r}
+fit3.sarima <- Arima((projeto2), order = c(1,1,0), seasonal = c(0,1,1))
+BETS::t_test(fit3.sarima, alpha = 0.05)
+```
+
+Agora que temos nosso modelo, precisamos testar se os resíduos se comportam como ruído branco, ou seja, se há ausência de autocorrelação linear e normalidade.
+
+Através do gráfico dos resíduos, não parece haver outliers:
+```{r}
+plot(fit3.sarima$residuals)
+```
+
+
+1. Para ver se os resíduos são são lineramente autocorrelacionados, plotamos a ACF e PACF. Como podemos ver, não parecem serialmente autocorrelacionados.
+```{r}
+acf(fit3.sarima$residuals)
+```
+```{r}
+pacf(fit3.sarima$residuals)
+```
+
+Vamos agora de fato testar a autocorrelação linear dos resíduos através do teste Ljung-Box
+```{r}
+Box.test(fit3.sarima$residuals, lag = 24, type ='Ljung-Box', fitdf =2)
+```
+
+Não rejeitamos a Ho de que os resíduos são independentemente distribuidos.
+
+Próximo passo: verificar a normalidade dos resíduos. 
+Tanto o teste de Shapiro quanto o Jarque Bera apresentaram resultados onde não se rejeita H0, ou seja, não rejeitamos a normalidade dos resíduos.
+```{r}
+hist(fit3.sarima$residuals)
+```
+```{r}
+library(tseries)
+shapiro.test(fit3.sarima$residuals)
+```
+```{r}
+jarque.bera.test(fit3.sarima$residuals) 
+```
+
+A título de curiosidade, podemos também testar a normalidade dos resíduos do primeiro modelo estimado pela função forecast. Apesar de não rejeitarmos Ho,é perceptível que as probabilidades são menores do que no modelo escolhido.
+```{r}
+shapiro.test(fit1.sarima$residuals)
+```
+```{r}
+jarque.bera.test(fit1.sarima$residuals) 
+```
+
+
+PREVISÃO
+```{r}
+prev<-forecast::forecast(object = fit3.sarima, h=12, level=0.95)
+forecast::autoplot(prev)
+```
+Depois puxamos a base de dados e filtramos as variáveis desejadas nas colunas da base e transformamos em série temporal com frequência 12, pois o lag é mensal
+```{r}
+df<-read_excel("df projeto.xlsx",
+                     col_names = TRUE,
+                     sheet = "Planilha1",
+                     range = "A2:N126")
+df<-df [-1, ]
+vardata <- df %>%
+  dplyr::select('Taxa Desemprego','IPCA','PIM','Crédito','PMS','PMC') %>%
+  as_tibble()%>%
+rename('td'='Taxa Desemprego')
+vardata %>%
+  as_tibble() %>%
+  mutate("Data"= seq(as.Date('2012-04-01'), as.Date('2022-06-01'),
+                    by = '1 month'))
+
+vardata_ts <- ts(vardata, frequency = 12)
+vardata2 <- diff(vardata_ts[,])
+```
+depois diferenciamos e testamos cada uma das variáveis até ser visível que cada uma delas é estacionária
+```{r}
+g1 <- autoplot(diff(vardata2[,1]))+xlab('')+ylab('')+ggtitle('Taxa Desemprego')
+g2 <- autoplot(diff(vardata2[,2]))+xlab('')+ylab('')+ggtitle('IPCA')
+g3 <- autoplot(vardata2[,3])+xlab('')+ylab('')+ggtitle('PIM')
+g4 <- autoplot(diff(vardata2[,4]))+xlab('')+ylab('')+ggtitle('Crédito')
+g5 <- autoplot(vardata2[,5])+xlab('')+ylab('')+ggtitle('PMS')
+g6 <- autoplot(vardata2[,6])+xlab('')+ylab('')+ggtitle('PMC')
+
+grid.arrange(g1,g2,g3,g4,g5,g6, ncol=2)
+def <- VARselect(vardata2, lag.max = 12, type = 'const', season = 12)
+def$selection
+```
+Em seguinte testamos com dummies sazonais, além do teste de normalidade e o de raízes, verificando como verdade que elas não são maiores do que um, portanto, estacionárias e normalmente distribuídas, este mesmo chunk acaba com coef test para encontrar os coeficientes do nosso VAR, e os LATEX seguintes representam os resultados encontrados.
+```{r}
+var_dummies <- forecast::seasonaldummy(vardata2[,1])
+var_dummies
+var <- VAR(vardata2, p=1, type = 'const', exogen = var_dummies)
+roots(var)
+which(roots(var)>1)
+serial.test(var) 
+normality.test(var)
+coeftest(var)
+```
+
+```{r}
+plot(TeX(r'(\tiny{${td}_{t} = -0.032 +0,795 {td}_{t-1}-0,0008{IPCA}_{t-1}+ 0.013{PIM}_{t-1}-0,023{PMS}_{t-1}-0,004{PMC}_{t-1}$})'), cex=2, main="")
+plot(TeX(r'(\tiny{${IPCA}_{t} =  2.558 -4.335 {td}_{t-1}-0,66{IPCA}_{t-1}-2.122{PIM}_{t-1}+1.081{PMS}_{t-1}+1.486{PMC}_{t-1}$})'), cex=2, main="")
+plot(TeX(r'(\tiny{${PIM}_{t} =  6.947 + 1.838 {td}_{t-1}- 0,01{IPCA}_{t-1}-0.549{PIM}_{t-1}+0,231{PMS}_{t-1}+0.274{PMC}_{t-1}$})'), cex=2, main="")
+plot(TeX(r'(\tiny{${PMS}_{t} =  5.77 + 0.53 {td}_{t-1} +0.02{IPCA}_{t-1}-0.22{PIM}_{t-1}-0.025{PMS}_{t-1}+0.169{PMC}_{t-1}$})'), cex=2, main="")
+plot(TeX(r'(\tiny{${PMC}_{t} =  5.38+ 2.27 {td}_{t-1} -0.008{IPCA}_{t-1}-0.145{PIM}_{t-1}-0.028{PMS}_{t-1}-0.08{PMC}_{t-1}$})'), cex=2, main="")
+```
+O final é uma série de comparações 1 a 1 sobre as funçoes de impulso resposta sobre cada uma das variáveis em relação ao desemprego.Nas plotagens, o intervalo encontrado é o impacto esperado de cada choque com 1 desvio padrão 
+```{r}
+fir.var <- irf(var, impulse = 'td', response = 'td', 
+               n.ahead = 12)
+plot(fir.var)
+
+plot(irf(var, impulse = 'IPCA', response = 'td', 
+         n.ahead = 12))
+
+plot(irf(var, impulse = 'PMC', response = 'td', 
+         n.ahead = 12))
+
+plot(irf(var, impulse = 'PMS', response = 'td',
+         n.ahead = 12))
+
+plot(irf(var, impulse = 'PIM', response = 'td', 
+         n.ahead = 12))
+
+plot(irf(var, impulse = 'Crédito', response = 'td', 
+         n.ahead = 12))
+
+dec.var <- fevd(var, n.ahead = 12)
+dec.var$IPCA
+```
+Parte 3.2
+Agora faremos o mesmo com demais variáveis para entender seus impactos sobre desemprego, usando a mesma metodologia. Para uso do mesmo arcabouço teórico foram escolhidas variáveis análogas à primeira parte:
+
+-Anfavea é a produção automotiva, um microcosmo da produção industrial
+-IBC-Br e Câmbio, respectivamente o índice de atividade econômica do Banco Central e o valor do dólar em reais. Juntos mostram o comportamento da moeda na nação.
+-selic é a taxa de juros, economicamente, sua variação é o que dita o comportamento do crédito
+
+Começamos lendo a base e filtrando as colunas contendo as informações de interesse, depois transformamos em uma série temporal abrangendo todo o período disponível. A função VARselect é a que vai estimar um VAR por equação OLS
+```{r}
+extra<-read_excel("df projeto.xlsx",
+                     col_names = TRUE,
+                     sheet = "Planilha1",
+                     range = "A2:N126")
+extra<-extra [-1, ]
+vardatax <- extra %>%
+  dplyr::select('Taxa Desemprego','IBC-Br','Anfavea','Selic','Câmbio (dólar)') %>%
+  as_tibble()%>%
+rename('td'='Taxa Desemprego','USD'='Câmbio (dólar)',)
+vardatax %>%
+  as_tibble() %>%
+  mutate("Data"= seq(as.Date('2012-04-01'), as.Date('2022-06-01'),
+                    by = '1 month'))
+vardatax_ts <- ts(vardatax, frequency = 12)
+vardatax2 <- diff(vardatax_ts[,])
+defx <- VARselect(vardata2, lag.max = 12, type = 'const', season = 12)
+defx$selection
+```
+
+Nesta próxima etapa analisamos as diferenças da nossa série temporal e incluímos dummies sazonais, assim podendo testar para normalidade, sazonalidade, raízes e coeficiente
+```{r}
+vardatax2 <- diff(vardatax_ts[,])
+varx_dummies <- forecast::seasonaldummy(vardatax2[,1])
+varx_dummies
+varx2 <- VAR(vardatax2, p=1, type = 'const', exogen = varx_dummies)
+coeftest(varx2)
+roots(varx2)
+which(roots(varx2)>1)
+serial.test(varx2) 
+normality.test(varx2)
+```
+Novamente, finalizamos computando as funções de impulso-resposta para agora verificar empiricamente o efeito de cada uma das variáveis dentro do período analisado
+```{r}
+fir.varx <- irf(varx2, impulse = 'IBC.Br', response = 'td', 
+               n.ahead = 12, ortho = TRUE, boot = TRUE, cumulative = TRUE)
+plot(fir.varx)
+
+plot(irf(varx2, impulse = 'Anfavea', response = 'td', 
+         n.ahead = 12, ortho = TRUE, boot = TRUE, cumulative = FALSE))
+
+plot(irf(varx2, impulse = 'Selic', response = 'td',
+         n.ahead = 12, ortho = TRUE, boot = TRUE, cumulative = TRUE))
+
+plot(irf(varx2, impulse = 'USD', response = 'td', 
+         n.ahead = 12, ortho = TRUE, boot = TRUE, cumulative = FALSE))
+dec.var <- fevd(varx2, n.ahead = 12)
+dec.var$IPCA
+```
+Visto que as variáveis são, em grau maior ou menor, análogas às obrigatórias pelo projeto do curso, era de se esperar efeitos semelhantes.
